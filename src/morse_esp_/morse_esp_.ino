@@ -33,7 +33,6 @@ enum Mode {
   MODE_IDLE,
   MODE_MORSE,
   MODE_MOTION,
-  MODE_DEBUG,
   MODE_COUNT
 };
 
