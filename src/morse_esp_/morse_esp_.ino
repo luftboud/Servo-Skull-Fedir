@@ -43,9 +43,10 @@ bool lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 unsigned long lastMutter = 0;
-bool prevMotion = true;
 unsigned long lastNoSightMutter = 0;
-const unsigned long noSightMutterDelay = 1500; 
+const unsigned long noSightMutterDelay = 30000; 
+unsigned long lastSightALARM = 0;
+const unsigned long SightALARMDelay = 2000; 
 
 struct Morse {
   char chr;
@@ -63,11 +64,22 @@ void printBootSequence() {
   Serial.println("+++INITIATING SACRED WAKE PROTOCOL+++");
   Serial.println("> Servitor cranial unit: MODEL XV-42 “Cogitatus Minor”");
   Serial.println("> Machine spirit stirring... [OK]");
-  Serial.println("> Optic array calibration... [COMPLETE]");
   Serial.println("> Vocal subroutines... [ACTIVE]");
-  Serial.println("> Incense levels... [ADEQUATE]");
   Serial.println("> Emperor's light detected... [BLESSINGS CONFIRMED]");
   Serial.println("+++SYSTEMS ONLINE+++");
+  Serial.println("+++AVE IMPERATOR, FLESHLING+++");
+  Serial.println("> MODE CONTROL: Tap the SANCTIFIED BUTTON to cycle.");
+  Serial.println("> Sequence: [IDLE → MORSE → MOTION → IDLE]");
+  Serial.println("> Hold 2s: perform minor benediction & debounce heresy.");
+  Serial.println("+++CATECHISM OF OPERATIONAL RITES+++");
+  Serial.println("> MODE: IDLE");
+  Serial.println("> Function: Standby vigil & ambience.");
+  Serial.println("> MODE: MORSE");
+  Serial.println("> Function: Transmit signals in holy Morse (binharic taps).");
+  Serial.println("> MODE: MOTION");
+  Serial.println("> Function: Auspex motion watch & pict-capture.");
+  Serial.println("+++BY THE OMNISSIAH, I STAND READY+++");
+  Serial.println("> State your command, magos. Flesh is weak; service is eternal.");
   Serial.println();
 }
 
@@ -121,11 +133,6 @@ void announceMode() {
       Serial.println("[MODE: MOTION AUGUR]");
       Serial.println("> Optic spirit online. Searching for heretical movement...");
       Serial.println("> Surveillance purity: 99.7%.");
-      break;
-    case MODE_DEBUG:
-      Serial.println("[MODE: TECH-ADEPT ACCESS]");
-      Serial.println("> Exposing cogitator internals.");
-      Serial.println("> Warning: Unauthorized tinkering risks spiritual corruption.");
       break;
   }
   Serial.println();
@@ -196,7 +203,7 @@ uint32_t diff_fb(const camera_fb_t* a, const camera_fb_t* b){
 
 void cam_setup() {
   if(!cam_init()){
-    Serial.println("Camera init FAILED (шлейф? пін-мап?)");
+    Serial.println("Camera init FAILED");
     while(true){ delay(1000); }
   }
   Serial.println("Camera OK");
@@ -233,9 +240,9 @@ void camera_loop() {
       digitalWrite(LED_PIN, LOW);
     }
     // Serial.printf("diff=%u  ema=%u  thr=%u  -> %s\n", d, ema, (ema+MARGIN), motion?"MOTION":"idle");
-    if (motion) {
+    if (motion && (millis() - lastSightALARM) >= SightALARMDelay ) {
       Serial.println(motionDetectedPhrases[random(numMotionDetected)]);
-      prevMotion = motion;
+      lastSightALARM = millis();
     } else if ((millis() - lastNoSightMutter) >= noSightMutterDelay) {
       Serial.println(noMotionPhrases[random(numNoMotion)]);
       lastNoSightMutter = millis();
@@ -282,7 +289,7 @@ void runCurrentMode() {
   switch (currentMode) {
     case MODE_IDLE:
       digitalWrite(LED_PIN, LOW);
-      if (millis() - lastMutter > random(10000, 20000)) {
+      if (millis() - lastMutter > random(20000, 30000)) {
         Serial.println(ambientPhrases[random(numPhrases)]);
         lastMutter = millis();
       }
@@ -292,9 +299,6 @@ void runCurrentMode() {
       break;
     case MODE_MOTION:
       camera_loop();
-      break;
-    case MODE_DEBUG:
-      digitalWrite(LED_PIN, HIGH);
       break;
   }
 }
