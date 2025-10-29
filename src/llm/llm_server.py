@@ -1,6 +1,5 @@
 import pydantic
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from llm import WarhammerBrain
 

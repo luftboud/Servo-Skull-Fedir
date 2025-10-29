@@ -44,6 +44,9 @@ void send_prompt(const String& prompt) {
 }
 
 void loop() {
-    String prompt = "Hello. Can you help me with my homework?";
-    send_prompt(prompt);
+    String prompt = Serial.readStringUntil('\n');
+    prompt.trim();
+    if (prompt.length() > 0) {
+        send_prompt(prompt);
+    }
 }
