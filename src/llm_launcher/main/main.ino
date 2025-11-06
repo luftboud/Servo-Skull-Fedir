@@ -3,7 +3,7 @@
 
 
 const char* ssid = "UCU_Guest";
-// const char* pwd = "tQI4451BB";
+// const char* pwd = "";
 
 void setup() {
     Serial.begin(9600);
@@ -17,10 +17,8 @@ void setup() {
 }
 
 void send_prompt(const String& prompt) {
-    Serial.println("Connecting to the API server");
-
     HTTPClient client;
-    client.begin("http://10.10.245.135:8000/ask_llm");
+    client.begin("http://10.10.240.218:8000/ask_llm_mp3");
     client.setTimeout(20000);
 
     String raw_prompt = prompt;
