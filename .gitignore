@@ -2,3 +2,5 @@
 .idea
 .venv
 __pycache__
+esp_idf_remake/build/
+esp_idf_remake/.metadata/
