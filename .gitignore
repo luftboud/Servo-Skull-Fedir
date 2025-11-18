@@ -5,3 +5,5 @@ __pycache__
 esp_idf_remake/build/
 esp_idf_remake/.metadata/
 .env
+.env.*
+*.env
