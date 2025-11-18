@@ -1,2 +1,4 @@
 .DS_store
 .idea
+esp_idf_remake/build/
+esp_idf_remake/.metadata/
