@@ -9,3 +9,4 @@ gtts~=2.5.4
 pydub~=0.25.1
 audioop-lts~=0.2.2
 ffmpeg~=1.4
+langchain-classic~=1.0.0

@@ -7,3 +7,5 @@ esp_idf_remake/.metadata/
 .env
 .env.*
 *.env
+.vscode
+build

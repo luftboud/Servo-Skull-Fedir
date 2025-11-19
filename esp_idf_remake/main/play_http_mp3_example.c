@@ -1,6 +1,5 @@
 #define CONFIG_ESP_WIFI_SSID      "UCU_Guest"
 #define CONFIG_ESP_WIFI_PASSWORD  ""
-#define YOUR_WAV_FILE_URL         "https://dl.espressif.com/dl/audio/ff-16b-1c-44100hz.wav"
 // #define YOUR_WAV_FILE_URL         ""
 
 #define AUDIO_SAMPLE_RATE         (16000)
@@ -13,6 +12,8 @@
 #include "nvs_flash.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+
+#include "esp_http_client.h"
 
 #include "audio_pipeline.h"
 #include "http_stream.h"
@@ -56,6 +57,9 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
+
+static const char *IP_PORT = "10.10.245.164:8000";
+static char* YOUR_WAV_FILE_URL = "http://10.10.245.164:8000/audio/sound.wav";
 
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -218,7 +222,6 @@ void adf_producer_task(void *pvParameters)
 }
 
 
-
 void dac_consumer_task(void *pvParameters)
 {
     dac_continuous_handle_t dac_handle;
@@ -267,6 +270,39 @@ void dac_consumer_task(void *pvParameters)
 }
 
 
+void get_wav_response(const char* prompt, esp_http_client_handle_t client) {
+    char json[512];
+    snprintf(json, sizeof(json), "{\"user_prompt\": \"%s\"}", prompt);
+
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, json, strlen(json));
+
+    esp_err_t err = esp_http_client_open(client, strlen(json));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_MAIN, "Cannot open");
+        esp_http_client_close(client);
+        return;
+    }
+
+    int wr = esp_http_client_write(client, json, strlen(json));
+    if (wr < 0) {
+        ESP_LOGE(TAG_MAIN, "Writing failed");
+        esp_http_client_close(client);
+        return;
+    }
+
+    esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGE(TAG_MAIN, "STATUS: %d", status);
+    if (status != 200) { ESP_LOGE(TAG_MAIN, "Response was not successful."); }
+    else {
+        ESP_LOGE(TAG_MAIN, "RESPONSE: SUCCESS");
+    }
+    esp_http_client_close(client);
+}
+
+
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -279,8 +315,19 @@ void app_main(void)
 
     wifi_connect();
 
+    esp_http_client_config_t config = {
+        .url = "http://10.10.245.164:8000/ask_llm_mp3",
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 15000
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    get_wav_response("Hello, can you help me with homework?", client);
+
+
     xTaskCreate(adf_producer_task, "adf_producer", 8 * 1024, NULL, 5, NULL);
     xTaskCreate(dac_consumer_task, "dac_consumer", 4 * 1024, NULL, 5, NULL);
     
     ESP_LOGI(TAG_MAIN, "app_main finished, tasks are running.");
+    esp_http_client_cleanup(client);
 }
