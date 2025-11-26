@@ -1,8 +1,3 @@
-#define CONFIG_ESP_WIFI_SSID      "UCU_Guest"
-#define CONFIG_ESP_WIFI_PASSWORD  ""
-// #define YOUR_WAV_FILE_URL         ""
-
-#define AUDIO_SAMPLE_RATE         (16000)
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,6 +41,50 @@
 #include "periph_button.h"
 #include "driver/dac_continuous.h"
 
+#include <string.h>
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "driver/adc.h"
+
+#include "mbedtls/base64.h"
+
+
+#define CONFIG_ESP_WIFI_SSID      "UCU_Guest"
+#define CONFIG_ESP_WIFI_PASSWORD  ""
+
+#define AUDIO_SAMPLE_RATE         (16000)
+
+#define MIC_ADC_CHANNEL ADC1_CHANNEL_7  // pin35
+#define SAMPLE_RATE 5512
+#define BUFFER_SIZE 512
+
+#define MAX_RECORD_SECONDS      6
+#define NUM_SAMPLES_MAX         (SAMPLE_RATE * MAX_RECORD_SECONDS)
+#define PCM_DATA_SIZE_MAX       (NUM_SAMPLES_MAX * sizeof(int16_t))
+#define WAV_TOTAL_SIZE_MAX      (sizeof(wav_header_t) + PCM_DATA_SIZE_MAX)
+
+#define SILENCE_THRESHOLD       800
+#define SILENCE_BLOCKS_TO_STOP  15
+
+typedef struct {
+    char riff_tag[4];
+    uint32_t riff_length;
+    char wave_tag[4]; 
+    char fmt_tag[4];
+    uint32_t fmt_length;
+    uint16_t audio_format;
+    uint16_t num_channels;
+    uint32_t sample_rate;
+    uint32_t byte_rate;
+    uint16_t block_align;
+    uint16_t bits_per_sample;
+    char data_tag[4];
+    uint32_t data_length;
+} wav_header_t;
+
+static const char *TAG = "APP";
 static const char *TAG_MAIN = "APP_MAIN";
 static const char *TAG_ADF = "ADF_PRODUCER";
 static const char *TAG_DAC = "DAC_CONSUMER";
@@ -58,8 +97,99 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 
-static const char *IP_PORT = "10.10.245.164:8000";
-static char* YOUR_WAV_FILE_URL = "http://10.10.245.164:8000/audio/sound.wav";
+static const char *IP_PORT = "10.10.224.189:8000";
+static char WAV_FILE_URL[64];
+static char ASK_LLM_URL[64]; 
+
+static uint8_t wav_buffer[WAV_TOTAL_SIZE_MAX];
+
+static char base64_code[4096];
+static size_t base64_len = 0;
+
+static size_t actual_wav_size = 0;
+
+
+void adc_init(void) {
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(MIC_ADC_CHANNEL, ADC_ATTEN_DB_11);
+}
+
+
+void write_wav_header_to_mem(uint8_t *dest, uint32_t data_len) {
+    wav_header_t header;
+
+    memcpy(header.riff_tag, "RIFF", 4);
+    header.riff_length = 36 + data_len;
+
+    memcpy(header.wave_tag, "WAVE", 4);
+    memcpy(header.fmt_tag, "fmt ", 4);
+
+    header.fmt_length = 16;
+    header.audio_format = 1;
+    header.num_channels = 1;
+    header.sample_rate = SAMPLE_RATE;
+    header.bits_per_sample = 16;
+
+    header.byte_rate = SAMPLE_RATE * header.num_channels * header.bits_per_sample / 8;
+    header.block_align = header.num_channels * header.bits_per_sample / 8;
+
+    memcpy(header.data_tag, "data", 4);
+    header.data_length = data_len;
+
+    memcpy(dest, &header, sizeof(wav_header_t));
+}
+
+
+void record_task(void) {
+    ESP_LOGI(TAG, "Start recording...");
+
+    int16_t *pcm = (int16_t *)(wav_buffer + sizeof(wav_header_t));
+    uint32_t total_samples = 0;
+
+    bool speaking_started = false;
+    int silent_blocks = 0;
+
+    while (total_samples < NUM_SAMPLES_MAX) {
+        int count = BUFFER_SIZE;
+        if (total_samples + count > NUM_SAMPLES_MAX) {
+            count = NUM_SAMPLES_MAX - total_samples;
+        }
+
+        int64_t sum_abs = 0;
+
+        for (int  i = 0; i < count; i++) {
+            int raw = adc1_get_raw(MIC_ADC_CHANNEL);
+
+            int16_t sample = (int16_t)((raw - 2048) << 4);
+            pcm[total_samples + i] = sample;
+
+            sum_abs += (sample >= 0) ? sample : -sample;
+        }
+
+        total_samples += count;
+
+        int avg_level = (int)(sum_abs / count);
+
+        if (avg_level > SILENCE_THRESHOLD) {
+            speaking_started = true;
+            silent_blocks = 0;
+        } else if (speaking_started) {
+            silent_blocks++;
+            if (silent_blocks >= SILENCE_BLOCKS_TO_STOP) {
+                ESP_LOGI(TAG, "Silence detected, stopping");
+                break;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    write_wav_header_to_mem(wav_buffer, total_samples * sizeof(int16_t));
+    actual_wav_size = sizeof(wav_header_t) + total_samples * sizeof(int16_t);
+
+    ESP_LOGI(TAG,
+             "Recording finished. Samples: %u, WAV size: %u bytes, buffer @ %p",
+             total_samples, (unsigned)WAV_TOTAL_SIZE_MAX, (void*)wav_buffer);
+}
 
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -145,7 +275,7 @@ void adf_producer_task(void *pvParameters)
 
     http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
     http_stream_reader = http_stream_init(&http_cfg);
-    audio_element_set_uri(http_stream_reader, YOUR_WAV_FILE_URL);
+    audio_element_set_uri(http_stream_reader, WAV_FILE_URL);
 
     wav_decoder_cfg_t wav_cfg = DEFAULT_WAV_DECODER_CONFIG();
     wav_decoder = wav_decoder_init(&wav_cfg);
@@ -270,9 +400,38 @@ void dac_consumer_task(void *pvParameters)
 }
 
 
-void get_wav_response(const char* prompt, esp_http_client_handle_t client) {
-    char json[512];
-    snprintf(json, sizeof(json), "{\"user_prompt\": \"%s\"}", prompt);
+void create_base64() {
+    if (actual_wav_size == 0) {
+        ESP_LOGE(TAG, "actual_wav_size == 0, nothing to encode");
+        base64_len = 0;
+        base64_code[0] = '\0';
+        return;
+    }
+
+    size_t src_len = actual_wav_size;
+    if (src_len > 2048) {
+        src_len = 2048;
+    }
+
+    int ret = mbedtls_base64_encode(
+        (unsigned char *)base64_code, sizeof(base64_code), &base64_len, 
+        (const unsigned char *)wav_buffer, src_len
+    );
+
+    if (base64_len < sizeof(base64_code)) {
+        base64_code[base64_len] = '\0';
+    } else {
+        base64_code[sizeof(base64_code) - 1] = '\0';
+    }
+}
+
+
+void get_wav_response(esp_http_client_handle_t client) {
+    create_base64();
+    ESP_LOGI(TAG, "Base: %s", base64_code);
+
+    char json[8192];
+    snprintf(json, sizeof(json), "{\"user_prompt\": \"%s\"}", base64_code);
 
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -313,17 +472,22 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     ESP_ERROR_CHECK(esp_netif_init());
 
+    snprintf(WAV_FILE_URL, sizeof(WAV_FILE_URL), "http://%s/audio/sound.wav", IP_PORT);
+    snprintf(ASK_LLM_URL, sizeof(ASK_LLM_URL), "http://%s/ask_llm_mp3", IP_PORT);
+
     wifi_connect();
 
+    adc_init();
+    record_task();
+
     esp_http_client_config_t config = {
-        .url = "http://10.10.245.164:8000/ask_llm_mp3",
+        .url = ASK_LLM_URL,
         .method = HTTP_METHOD_POST,
         .timeout_ms = 15000
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    get_wav_response("Hello, can you help me with homework?", client);
-
+    get_wav_response(client);
 
     xTaskCreate(adf_producer_task, "adf_producer", 8 * 1024, NULL, 5, NULL);
     xTaskCreate(dac_consumer_task, "dac_consumer", 4 * 1024, NULL, 5, NULL);
