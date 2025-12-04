@@ -47,6 +47,8 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "driver/adc.h"
+#include "esp_timer.h"
+#include "esp_rom_sys.h"
 
 #include "mbedtls/base64.h"
 
@@ -58,12 +60,14 @@
 
 #define MIC_ADC_CHANNEL ADC1_CHANNEL_7  // pin35
 #define SAMPLE_RATE 5512
-#define BUFFER_SIZE 512
+
 
 #define MAX_RECORD_SECONDS      6
 #define NUM_SAMPLES_MAX         (SAMPLE_RATE * MAX_RECORD_SECONDS)
 #define PCM_DATA_SIZE_MAX       (NUM_SAMPLES_MAX * sizeof(int16_t))
 #define WAV_TOTAL_SIZE_MAX      (sizeof(wav_header_t) + PCM_DATA_SIZE_MAX)
+
+#define MAX_BUFFER_SIZE 90000
 
 #define SILENCE_THRESHOLD       800
 #define SILENCE_BLOCKS_TO_STOP  15
@@ -97,13 +101,13 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 
-static const char *IP_PORT = "10.10.224.189:8000";
+static const char *IP_PORT = "10.10.240.39:8000";
 static char WAV_FILE_URL[64];
 static char ASK_LLM_URL[64]; 
 
 static uint8_t wav_buffer[WAV_TOTAL_SIZE_MAX];
 
-static char base64_code[4096];
+static char* base64_code;
 static size_t base64_len = 0;
 
 static size_t actual_wav_size = 0;
@@ -139,58 +143,59 @@ void write_wav_header_to_mem(uint8_t *dest, uint32_t data_len) {
     memcpy(dest, &header, sizeof(wav_header_t));
 }
 
+static int measure_dc_mid(void) {
+    const int N = 2000;
+    int64_t sum = 0;
+    for (int i = 0; i < N; ++i) {
+        sum += adc1_get_raw(MIC_ADC_CHANNEL);
+        esp_rom_delay_us(1000000 / SAMPLE_RATE);
+    }
+    int mid = (int)(sum / N);
+    return mid;
+}
 
 void record_task(void) {
     ESP_LOGI(TAG, "Start recording...");
 
+    int dc_mid = measure_dc_mid();
+
     int16_t *pcm = (int16_t *)(wav_buffer + sizeof(wav_header_t));
     uint32_t total_samples = 0;
 
-    bool speaking_started = false;
-    int silent_blocks = 0;
+    const int period_us = 1000000 / SAMPLE_RATE;
+    int64_t next_time = esp_timer_get_time();
 
     while (total_samples < NUM_SAMPLES_MAX) {
-        int count = BUFFER_SIZE;
-        if (total_samples + count > NUM_SAMPLES_MAX) {
-            count = NUM_SAMPLES_MAX - total_samples;
+        int raw = adc1_get_raw(MIC_ADC_CHANNEL);
+
+        int32_t centered = (int32_t)raw - dc_mid;
+        int32_t scaled   = centered << 2;
+
+        if (scaled > 32767)  scaled = 32767;
+        if (scaled < -32768) scaled = -32768;
+
+        int16_t sample = (int16_t)scaled;
+        pcm[total_samples++] = sample;
+
+        next_time += period_us;
+        int64_t now = esp_timer_get_time();
+        int64_t delay = next_time - now;
+        if (delay > 0) {
+            esp_rom_delay_us((uint32_t)delay);
+        } else {
+            next_time = now;
         }
 
-        int64_t sum_abs = 0;
-
-        for (int  i = 0; i < count; i++) {
-            int raw = adc1_get_raw(MIC_ADC_CHANNEL);
-
-            int16_t sample = (int16_t)((raw - 2048) << 4);
-            pcm[total_samples + i] = sample;
-
-            sum_abs += (sample >= 0) ? sample : -sample;
+        if ((total_samples % 1000) == 0) {
+            vTaskDelay(1);
         }
-
-        total_samples += count;
-
-        int avg_level = (int)(sum_abs / count);
-
-        if (avg_level > SILENCE_THRESHOLD) {
-            speaking_started = true;
-            silent_blocks = 0;
-        } else if (speaking_started) {
-            silent_blocks++;
-            if (silent_blocks >= SILENCE_BLOCKS_TO_STOP) {
-                ESP_LOGI(TAG, "Silence detected, stopping");
-                break;
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(5));
     }
+
     write_wav_header_to_mem(wav_buffer, total_samples * sizeof(int16_t));
     actual_wav_size = sizeof(wav_header_t) + total_samples * sizeof(int16_t);
 
-    ESP_LOGI(TAG,
-             "Recording finished. Samples: %u, WAV size: %u bytes, buffer @ %p",
-             total_samples, (unsigned)WAV_TOTAL_SIZE_MAX, (void*)wav_buffer);
+    ESP_LOGI(TAG, "Recording finished. Samples: %u", total_samples);
 }
-
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -243,6 +248,8 @@ void wifi_connect(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
     ESP_ERROR_CHECK(esp_wifi_start() );
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
 
     ESP_LOGI(TAG_MAIN, "wifi_init_sta finished.");
 
@@ -401,50 +408,38 @@ void dac_consumer_task(void *pvParameters)
 
 
 void create_base64() {
-    if (actual_wav_size == 0) {
-        ESP_LOGE(TAG, "actual_wav_size == 0, nothing to encode");
-        base64_len = 0;
-        base64_code[0] = '\0';
-        return;
-    }
-
     size_t src_len = actual_wav_size;
-    if (src_len > 2048) {
-        src_len = 2048;
-    }
 
-    int ret = mbedtls_base64_encode(
-        (unsigned char *)base64_code, sizeof(base64_code), &base64_len, 
+    mbedtls_base64_encode(
+        (unsigned char *)base64_code, MAX_BUFFER_SIZE, &base64_len, 
         (const unsigned char *)wav_buffer, src_len
     );
 
-    if (base64_len < sizeof(base64_code)) {
+    if (base64_len < MAX_BUFFER_SIZE) {
         base64_code[base64_len] = '\0';
-    } else {
-        base64_code[sizeof(base64_code) - 1] = '\0';
-    }
+    } else base64_code[MAX_BUFFER_SIZE - 1] = '\0';
 }
 
 
 void get_wav_response(esp_http_client_handle_t client) {
     create_base64();
-    ESP_LOGI(TAG, "Base: %s", base64_code);
+    size_t json_size = base64_len + 32;
 
-    char json[8192];
-    snprintf(json, sizeof(json), "{\"user_prompt\": \"%s\"}", base64_code);
+    char *json = malloc(json_size);
+    int actual_size = snprintf(json, json_size, "{\"user_prompt\": \"%s\"}", base64_code);
 
     esp_http_client_set_method(client, HTTP_METHOD_POST);
     esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, json, strlen(json));
+    esp_http_client_set_post_field(client, json, actual_size);
 
-    esp_err_t err = esp_http_client_open(client, strlen(json));
+    esp_err_t err = esp_http_client_open(client, actual_size);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_MAIN, "Cannot open");
         esp_http_client_close(client);
         return;
     }
 
-    int wr = esp_http_client_write(client, json, strlen(json));
+    int wr = esp_http_client_write(client, json, actual_size);
     if (wr < 0) {
         ESP_LOGE(TAG_MAIN, "Writing failed");
         esp_http_client_close(client);
@@ -458,12 +453,15 @@ void get_wav_response(esp_http_client_handle_t client) {
     else {
         ESP_LOGE(TAG_MAIN, "RESPONSE: SUCCESS");
     }
+
+    free(json);
     esp_http_client_close(client);
 }
 
 
 void app_main(void)
 {
+    base64_code = malloc(MAX_BUFFER_SIZE);
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());

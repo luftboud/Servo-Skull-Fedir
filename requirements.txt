@@ -10,3 +10,4 @@ pydub~=0.25.1
 audioop-lts~=0.2.2
 ffmpeg~=1.4
 langchain-classic~=1.0.0
+qroq~=0.37.0
