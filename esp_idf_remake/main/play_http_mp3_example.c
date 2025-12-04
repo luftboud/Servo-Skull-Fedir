@@ -1,57 +1,44 @@
+#include <stdio.h>
 #include <string.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
 #include "freertos/event_groups.h"
-#include "esp_log.h"
-#include "nvs_flash.h"
-#include "esp_wifi.h"
-#include "esp_netif.h"
-
-#include "esp_http_client.h"
-
-#include "audio_pipeline.h"
-#include "http_stream.h"
-#include "wav_decoder.h"
-#include "audio_event_iface.h"
-#include "audio_mem.h"
-#include "audio_common.h"
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/timers.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_rom_sys.h"
+#include "nvs_flash.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_http_client.h"
 #include "esp_spiffs.h"
 #include "sdkconfig.h"
-#include "raw_stream.h"
-#include "audio_element.h"
+
+#include "driver/adc.h"
+#include "driver/dac_continuous.h"
+
 #include "audio_pipeline.h"
+#include "audio_element.h"
 #include "audio_event_iface.h"
 #include "audio_mem.h"
 #include "audio_common.h"
-#include "fatfs_stream.h"
+#include "raw_stream.h"
+#include "http_stream.h"
 #include "i2s_stream.h"
+#include "fatfs_stream.h"
 #include "wav_encoder.h"
 #include "wav_decoder.h"
-#include "board.h"
 #include "filter_resample.h"
+#include "board.h"
+
 #include "esp_peripherals.h"
 #include "periph_sdcard.h"
 #include "periph_button.h"
-#include "driver/dac_continuous.h"
-
-#include <string.h>
-#include <stdio.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_log.h"
-#include "driver/adc.h"
-#include "esp_timer.h"
-#include "esp_rom_sys.h"
 
 #include "mbedtls/base64.h"
-
 
 #define CONFIG_ESP_WIFI_SSID      "UCU_Guest"
 #define CONFIG_ESP_WIFI_PASSWORD  ""
@@ -71,6 +58,8 @@
 
 #define SILENCE_THRESHOLD       800
 #define SILENCE_BLOCKS_TO_STOP  15
+
+#define BUTTON_PIN 2
 
 typedef struct {
     char riff_tag[4];
@@ -473,10 +462,14 @@ void app_main(void)
     snprintf(WAV_FILE_URL, sizeof(WAV_FILE_URL), "http://%s/audio/sound.wav", IP_PORT);
     snprintf(ASK_LLM_URL, sizeof(ASK_LLM_URL), "http://%s/ask_llm_mp3", IP_PORT);
 
-    wifi_connect();
-
-    adc_init();
-    record_task();
+    gpio_config_t btn_config = {
+        .pin_bit_mask = 1ULL << BUTTON_PIN,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&btn_config);
 
     esp_http_client_config_t config = {
         .url = ASK_LLM_URL,
@@ -484,12 +477,22 @@ void app_main(void)
         .timeout_ms = 15000
     };
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    get_wav_response(client);
+    wifi_connect();
+    adc_init();
 
-    xTaskCreate(adf_producer_task, "adf_producer", 8 * 1024, NULL, 5, NULL);
-    xTaskCreate(dac_consumer_task, "dac_consumer", 4 * 1024, NULL, 5, NULL);
-    
-    ESP_LOGI(TAG_MAIN, "app_main finished, tasks are running.");
-    esp_http_client_cleanup(client);
+    while (1) {
+        if (gpio_get_level(BUTTON_PIN)) {
+            record_task();
+
+            esp_http_client_handle_t client = esp_http_client_init(&config);
+            get_wav_response(client);
+
+            xTaskCreate(adf_producer_task, "adf_producer", 8 * 1024, NULL, 5, NULL);
+            xTaskCreate(dac_consumer_task, "dac_consumer", 4 * 1024, NULL, 5, NULL);
+            
+            ESP_LOGI(TAG_MAIN, "app_main finished, tasks are running.");
+            esp_http_client_cleanup(client);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
