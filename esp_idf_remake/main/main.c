@@ -61,7 +61,7 @@
 #define SILENCE_THRESHOLD       800
 #define SILENCE_BLOCKS_TO_STOP  15
 
-#define BUTTON_PIN 2
+#define BUTTON_PIN 5
 
 #define SERVO_MIN_PULSEWIDTH_US 500
 #define SERVO_MAX_PULSEWIDTH_US 2500
@@ -109,7 +109,7 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 
-static const char *IP_PORT = "10.10.240.39:8000";
+static const char *IP_PORT = "10.10.241.221:8000";
 static char WAV_FILE_URL[64];
 static char ASK_LLM_URL[64]; 
 
@@ -541,8 +541,6 @@ void move_servo(servo_handles_t *handlers, int angle)
     ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(handlers->cmpr2, example_angle_to_compare(-angle)));
 }
 
-bool yes = true;
-
 void app_main(void)
 {
     base64_code = malloc(MAX_BUFFER_SIZE);
@@ -576,8 +574,7 @@ void app_main(void)
     adc_init();
 
     while (1) {
-        if (gpio_get_level(BUTTON_PIN) || yes) {
-            yes = fasle;
+        if (gpio_get_level(BUTTON_PIN)) {
             record_task();
 
             esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -589,19 +586,6 @@ void app_main(void)
             ESP_LOGI(TAG_MAIN, "app_main finished, tasks are running.");
             esp_http_client_cleanup(client);
         }
-
-        if (is_audio_playing) {
-            move_servo(&servos, angle);
-        
-            vTaskDelay(pdMS_TO_TICKS(15));
-
-            if ((angle + step > 60) || (angle + step < 0)) {
-                step *= -1;
-            }
-            angle += step;
-        } else {
-            move_servo(&servos, 0);
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
