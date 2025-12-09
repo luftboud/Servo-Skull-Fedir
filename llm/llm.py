@@ -12,7 +12,7 @@ dotenv.load_dotenv()
 
 class WarhammerBrain:
     def __init__(self):
-        self.__llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0.9)
+        self.__llm = ChatGoogleGenerativeAI(model='gemini-2.5-flash', temperature=0.9)
         self.__curr_history = ConversationBufferMemory(memory_key='history', return_messages=True)
 
     def __setup_prompt(self, user_prompt: str):
