@@ -73,6 +73,9 @@
 #define SERVO_TIMEBASE_RESOLUTION_HZ 1000000
 #define SERVO_TIMEBASE_PERIOD        20000
 
+#define SERVO_MOUTH_CLOSED 75
+#define SERVO_MOUTH_OPEN 55
+
 typedef struct {
     char riff_tag[4];
     uint32_t riff_length;
@@ -202,7 +205,7 @@ void record_task(void) {
     write_wav_header_to_mem(wav_buffer, total_samples * sizeof(int16_t));
     actual_wav_size = sizeof(wav_header_t) + total_samples * sizeof(int16_t);
 
-    ESP_LOGI(TAG, "Recording finished. Samples: %u", total_samples);
+    // ESP_LOGI(TAG, "Recording finished. Samples: %u", total_samples);
 }
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -573,6 +576,10 @@ void app_main(void)
     wifi_connect();
     adc_init();
 
+    servo_handles_t servos;
+    init_servos(&servos);
+    int angle = SERVO_MOUTH_CLOSED;
+    int direction = -1;
     while (1) {
         if (gpio_get_level(BUTTON_PIN)) {
             record_task();
@@ -586,6 +593,16 @@ void app_main(void)
             ESP_LOGI(TAG_MAIN, "app_main finished, tasks are running.");
             esp_http_client_cleanup(client);
         }
-        vTaskDelay(pdMS_TO_TICKS(50));
+        if (is_audio_playing) {
+            move_servo(&servos, angle);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            angle += direction;
+            if (angle <= SERVO_MOUTH_OPEN || angle >= SERVO_MOUTH_CLOSED) {
+                direction *= -1;
+            }
+        } else if (angle != SERVO_MOUTH_CLOSED) {
+            angle = SERVO_MOUTH_CLOSED;
+            move_servo(&servos, angle);
+        }
     }
 }

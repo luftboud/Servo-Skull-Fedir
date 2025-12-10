@@ -2,7 +2,7 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
-
+set(ADF_PATH $ENV{ADF_PATH})
 
 set(EXTRA_COMPONENT_DIRS
     "${ADF_PATH}/components"
