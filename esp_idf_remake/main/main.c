@@ -63,6 +63,8 @@
 
 #define BUTTON_PIN 5
 
+#define LED_PIN 4
+
 #define SERVO_MIN_PULSEWIDTH_US 500
 #define SERVO_MAX_PULSEWIDTH_US 2500
 #define SERVO_MIN_DEGREE        -90
@@ -93,6 +95,7 @@ typedef struct {
 } wav_header_t;
 
 volatile bool is_audio_playing = false;
+volatile bool is_led_on = true;
 
 typedef struct {
     mcpwm_cmpr_handle_t cmpr1;
@@ -112,7 +115,7 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_FAIL_BIT      BIT1
 
 
-static const char *IP_PORT = "10.10.241.221:8000";
+static const char *IP_PORT = "10.10.243.199:8000";
 static char WAV_FILE_URL[64];
 static char ASK_LLM_URL[64]; 
 
@@ -406,15 +409,18 @@ void dac_consumer_task(void *pvParameters)
         if (bytes_read > 0) {
             ESP_ERROR_CHECK(dac_continuous_write(dac_handle, new_buf, bytes_read, NULL, -1));
             is_audio_playing = true;
+            is_led_on = false;
         } else if (bytes_read == AEL_IO_TIMEOUT) {
             ESP_LOGW(TAG_DAC, "raw_stream_read timeout");
         } else if (bytes_read == AEL_IO_DONE) {
             ESP_LOGI(TAG_DAC, "RAW stream finished");
             is_audio_playing = false;
+            is_led_on = true;
             break;
         } else if (bytes_read < 0) {
             ESP_LOGE(TAG_DAC, "raw_stream_read error: %d", bytes_read);
             is_audio_playing = false;
+            is_led_on = true;
             break;
         }
     }
@@ -567,6 +573,16 @@ void app_main(void)
     };
     gpio_config(&btn_config);
 
+    gpio_config_t led_config = {
+        .pin_bit_mask = 1ULL << LED_PIN,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&led_config);
+    gpio_set_level(LED_PIN, 0);
+
     esp_http_client_config_t config = {
         .url = ASK_LLM_URL,
         .method = HTTP_METHOD_POST,
@@ -580,8 +596,13 @@ void app_main(void)
     init_servos(&servos);
     int angle = SERVO_MOUTH_CLOSED;
     int direction = -1;
+
+    gpio_set_level(LED_PIN, 1);
     while (1) {
+        gpio_set_level(LED_PIN, is_led_on ? 1 : 0);
         if (gpio_get_level(BUTTON_PIN)) {
+            is_led_on = false;
+            gpio_set_level(LED_PIN, is_led_on ? 1 : 0);
             record_task();
 
             esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -602,6 +623,7 @@ void app_main(void)
             }
         } else if (angle != SERVO_MOUTH_CLOSED) {
             angle = SERVO_MOUTH_CLOSED;
+            direction = -1;
             move_servo(&servos, angle);
         }
     }
